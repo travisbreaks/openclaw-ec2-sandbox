@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# backup-volumes — backs up Docker volumes, shared memory, and scripts
+# Supports daily and weekly rotation.
+#
+# Usage:
+#   backup-volumes             # daily backup
+#   backup-volumes --weekly    # weekly backup (run from Sunday cron)
+#   backup-volumes --verify    # verify last backup integrity
+#
+# Add to crontab:
+#   0 2 * * * /home/ubuntu/scripts/backup-volumes >> /var/log/backup.log 2>&1
+#   0 3 * * 0 /home/ubuntu/scripts/backup-volumes --weekly >> /var/log/backup.log 2>&1
+
+set -euo pipefail
+
+BACKUP_ROOT="${BACKUP_ROOT:-/home/ubuntu/backups}"
+DAILY_DIR="${BACKUP_ROOT}/daily"
+WEEKLY_DIR="${BACKUP_ROOT}/weekly"
+MEMORY_DIR="${MEMORY_DIR:-/home/ubuntu/agents/memory}"
+SCRIPTS_DIR="${SCRIPTS_DIR:-/home/ubuntu/scripts}"
+DOCKER_VOLUME="${DOCKER_VOLUME:-agent-data}"
+DAILY_RETAIN="${DAILY_RETAIN:-7}"
+WEEKLY_RETAIN="${WEEKLY_RETAIN:-4}"
+
+MODE="daily"
+VERIFY=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --weekly) MODE="weekly" ;;
+    --verify) VERIFY=true ;;
+  esac
+done
+
+timestamp() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log() {
+  echo "[$(timestamp)] backup-volumes: $*"
+}
+
+# --- Verify mode ---
+if [ "$VERIFY" = true ]; then
+  log "verifying last backup..."
+  latest_daily=$(ls -t "${DAILY_DIR}"/ 2>/dev/null | head -1)
+  if [ -z "$latest_daily" ]; then
+    log "ERROR: no daily backups found in ${DAILY_DIR}"
+    exit 1
+  fi
+  backup_path="${DAILY_DIR}/${latest_daily}"
+  log "latest daily: ${backup_path}"
+  for f in "${backup_path}"/*.tar.gz; do
+    size=$(du -sh "$f" | cut -f1)
+    log "  $f — $size"
+  done
+  log "verify complete"
+  exit 0
+fi
+
+# --- Backup ---
+
+datestamp=$(date -u +"%Y-%m-%d_%H%M%S")
+TARGET_DIR="${DAILY_DIR}/${datestamp}"
+
+if [ "$MODE" = "weekly" ]; then
+  TARGET_DIR="${WEEKLY_DIR}/${datestamp}"
+fi
+
+mkdir -p "$TARGET_DIR"
+log "starting ${MODE} backup → ${TARGET_DIR}"
+
+# 1. Docker volume
+log "backing up Docker volume: ${DOCKER_VOLUME}"
+docker run --rm \
+  -v "${DOCKER_VOLUME}:/source:ro" \
+  -v "${TARGET_DIR}:/backup" \
+  alpine tar czf /backup/docker-volume.tar.gz -C /source .
+log "docker-volume.tar.gz: $(du -sh "${TARGET_DIR}/docker-volume.tar.gz" | cut -f1)"
+
+# 2. Shared memory
+log "backing up shared memory: ${MEMORY_DIR}"
+tar czf "${TARGET_DIR}/memory.tar.gz" -C "$(dirname "$MEMORY_DIR")" "$(basename "$MEMORY_DIR")"
+log "memory.tar.gz: $(du -sh "${TARGET_DIR}/memory.tar.gz" | cut -f1)"
+
+# 3. Scripts
+log "backing up scripts: ${SCRIPTS_DIR}"
+tar czf "${TARGET_DIR}/scripts.tar.gz" -C "$(dirname "$SCRIPTS_DIR")" "$(basename "$SCRIPTS_DIR")"
+log "scripts.tar.gz: $(du -sh "${TARGET_DIR}/scripts.tar.gz" | cut -f1)"
+
+# --- Rotation ---
+
+if [ "$MODE" = "daily" ]; then
+  retain_dir="$DAILY_DIR"
+  retain_count="$DAILY_RETAIN"
+else
+  retain_dir="$WEEKLY_DIR"
+  retain_count="$WEEKLY_RETAIN"
+fi
+
+# Delete oldest backups beyond retention count
+backup_count=$(ls -1 "$retain_dir" | wc -l)
+if [ "$backup_count" -gt "$retain_count" ]; then
+  to_delete=$(( backup_count - retain_count ))
+  log "pruning ${to_delete} old ${MODE} backup(s)"
+  ls -1t "$retain_dir" | tail -n "$to_delete" | while read -r old; do
+    rm -rf "${retain_dir:?}/${old}"
+    log "  deleted: ${old}"
+  done
+fi
+
+log "${MODE} backup complete: ${TARGET_DIR}"

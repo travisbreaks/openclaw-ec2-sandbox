@@ -1,0 +1,39 @@
+services:
+  your-agent:
+    image: ghcr.io/anthropics/claude-code:latest
+    container_name: your-agent-container
+    restart: unless-stopped
+
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CLAUDE_CODE_USE_BEDROCK: "false"
+
+    volumes:
+      # Persistent agent workspace (survives container restarts)
+      - agent-data:/app/data
+
+      # Shared memory: host and agent both read/write here
+      # Host path: ~/agents/memory/
+      # Container path: /app/memory/
+      - ${SHARED_MEMORY_HOST_PATH}:/app/memory
+
+    security_opt:
+      - no-new-privileges:true
+
+    # RAM limit: tune based on your instance size.
+    # t3.small (2GB RAM): 1.5GB leaves headroom for host + cron.
+    # t3.medium (4GB RAM): 2.5-3GB is comfortable.
+    mem_limit: 1536m
+    cpus: "1.5"
+
+    # Working directory inside the container.
+    # Adjust this path to match your agent framework's workspace layout.
+    working_dir: /app/workspace
+
+    # Keep stdin open so Claude Code can run interactively
+    stdin_open: true
+    tty: true
+
+volumes:
+  agent-data:
+    driver: local

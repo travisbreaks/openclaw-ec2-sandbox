@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# sentinel-msg — send a message to the container agent
+# Writes to sentinel-mailbox.json in shared memory.
+# The agent reads this on their next run and can respond via egger-mailbox.json.
+#
+# Usage:
+#   sentinel-msg "Please audit the monitor logs from the past week and summarize."
+#   sentinel-msg "Tonight: research X and leave a report in your memory dir."
+#
+# The agent's BOOT.md should instruct them to check sentinel-mailbox.json on startup.
+
+set -euo pipefail
+
+MEMORY_DIR="${MEMORY_DIR:-/home/ubuntu/agents/memory}"
+MAILBOX="${MEMORY_DIR}/sentinel-mailbox.json"
+
+if [ $# -eq 0 ]; then
+  echo "Usage: sentinel-msg <message>" >&2
+  exit 1
+fi
+
+message="$*"
+timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+if [ ! -f "$MAILBOX" ]; then
+  echo '{"messages":[]}' > "$MAILBOX"
+fi
+
+python3 - <<PYEOF
+import json
+
+with open("$MAILBOX") as f:
+    mailbox = json.load(f)
+
+if "messages" not in mailbox or not isinstance(mailbox["messages"], list):
+    mailbox["messages"] = []
+
+mailbox["messages"].append({
+    "timestamp": "$timestamp",
+    "from": "sentinel",
+    "message": """$message"""
+})
+
+# Keep last 50 messages
+mailbox["messages"] = mailbox["messages"][-50:]
+
+with open("$MAILBOX", "w") as f:
+    json.dump(mailbox, f, indent=2)
+
+print(f"[{\"$timestamp\"}] message queued in $MAILBOX")
+PYEOF

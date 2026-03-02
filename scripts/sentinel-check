@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# sentinel-check — health monitoring cron script
+# Runs every 15 minutes. Checks disk, RAM, swap, load, and container health.
+# Writes an event to hydra-state.json in the shared memory directory.
+#
+# Usage: add to crontab
+#   */15 * * * * /home/ubuntu/scripts/sentinel-check >> /var/log/sentinel.log 2>&1
+
+set -euo pipefail
+
+MEMORY_DIR="${MEMORY_DIR:-/home/ubuntu/agents/memory}"
+HYDRA_STATE="${MEMORY_DIR}/hydra-state.json"
+CONTAINER_NAME="${CONTAINER_NAME:-your-agent-container}"
+SWAP_ALERT_MB="${SWAP_ALERT_MB:-1400}"
+DISK_ALERT_PCT="${DISK_ALERT_PCT:-80}"
+
+timestamp() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log() {
+  echo "[$(timestamp)] sentinel-check: $*"
+}
+
+# --- Gather metrics ---
+
+disk_pct=$(df / | awk 'NR==2 {gsub(/%/,""); print $5}')
+ram_used_mb=$(free -m | awk '/^Mem:/ {print $3}')
+ram_total_mb=$(free -m | awk '/^Mem:/ {print $2}')
+swap_used_mb=$(free -m | awk '/^Swap:/ {print $3}')
+load_1min=$(awk '{print $1}' /proc/loadavg)
+
+# Container health
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+  container_status="running"
+else
+  container_status="stopped"
+fi
+
+log "disk=${disk_pct}% ram=${ram_used_mb}/${ram_total_mb}MB swap=${swap_used_mb}MB load=${load_1min} container=${container_status}"
+
+# --- Alert conditions ---
+
+alerts=()
+
+if [ "$disk_pct" -ge "$DISK_ALERT_PCT" ]; then
+  alerts+=("DISK_HIGH:${disk_pct}%")
+  log "ALERT: disk at ${disk_pct}%"
+fi
+
+if [ "$swap_used_mb" -ge "$SWAP_ALERT_MB" ]; then
+  alerts+=("SWAP_HIGH:${swap_used_mb}MB")
+  log "ALERT: swap at ${swap_used_mb}MB (threshold: ${SWAP_ALERT_MB}MB)"
+fi
+
+if [ "$container_status" = "stopped" ]; then
+  alerts+=("CONTAINER_DOWN")
+  log "ALERT: ${CONTAINER_NAME} is not running"
+fi
+
+# --- Write event to hydra-state.json ---
+
+if [ ! -f "$HYDRA_STATE" ]; then
+  echo '{"events":[]}' > "$HYDRA_STATE"
+fi
+
+event=$(cat <<EOF
+{
+  "timestamp": "$(timestamp)",
+  "agent": "sentinel",
+  "event": "health_check",
+  "data": {
+    "disk_pct": ${disk_pct},
+    "ram_used_mb": ${ram_used_mb},
+    "ram_total_mb": ${ram_total_mb},
+    "swap_used_mb": ${swap_used_mb},
+    "load_1min": "${load_1min}",
+    "container_status": "${container_status}",
+    "alerts": [$(printf '"%s",' "${alerts[@]:-}" | sed 's/,$//')]
+  }
+}
+EOF
+)
+
+# Append event and prune to last 24 hours of entries (keep max 200)
+tmp=$(mktemp)
+python3 - <<PYEOF "$HYDRA_STATE" "$tmp"
+import json, sys
+from datetime import datetime, timezone, timedelta
+
+state_file, out_file = sys.argv[1], sys.argv[2]
+event = $event
+
+with open(state_file) as f:
+    state = json.load(f)
+
+events = state.get("events", [])
+if not isinstance(events, list):
+    events = []
+
+events.append(event)
+
+# Prune: keep last 24h or last 200, whichever is smaller
+cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+events = [e for e in events if e.get("timestamp", "") >= cutoff]
+events = events[-200:]
+
+state["events"] = events
+with open(out_file, "w") as f:
+    json.dump(state, f, indent=2)
+PYEOF
+
+mv "$tmp" "$HYDRA_STATE"
+
+log "done. alerts: ${#alerts[@]}"

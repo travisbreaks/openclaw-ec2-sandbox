@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# sentinel-status-update — writes a full status JSON to shared memory
+# Runs on a cron offset from sentinel-check (e.g., every 15 min at :02/:17/:32/:47)
+# Output is read by dashboards, Local Claude, and Egger.
+#
+# Usage: add to crontab
+#   2,17,32,47 * * * * /home/ubuntu/scripts/sentinel-status-update >> /var/log/sentinel-status.log 2>&1
+
+set -euo pipefail
+
+MEMORY_DIR="${MEMORY_DIR:-/home/ubuntu/agents/memory}"
+STATUS_FILE="${MEMORY_DIR}/sentinel-status.json"
+CONTAINER_NAME="${CONTAINER_NAME:-your-agent-container}"
+
+timestamp() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log() {
+  echo "[$(timestamp)] sentinel-status-update: $*"
+}
+
+# --- Gather metrics ---
+
+disk_pct=$(df / | awk 'NR==2 {gsub(/%/,""); print $5}')
+disk_used_gb=$(df -BG / | awk 'NR==2 {gsub(/G/,""); print $3}')
+disk_total_gb=$(df -BG / | awk 'NR==2 {gsub(/G/,""); print $2}')
+
+ram_used_mb=$(free -m | awk '/^Mem:/ {print $3}')
+ram_total_mb=$(free -m | awk '/^Mem:/ {print $2}')
+ram_free_mb=$(free -m | awk '/^Mem:/ {print $4}')
+
+swap_used_mb=$(free -m | awk '/^Swap:/ {print $3}')
+swap_total_mb=$(free -m | awk '/^Swap:/ {print $2}')
+
+load_1min=$(awk '{print $1}' /proc/loadavg)
+load_5min=$(awk '{print $2}' /proc/loadavg)
+load_15min=$(awk '{print $3}' /proc/loadavg)
+
+uptime_seconds=$(awk '{print int($1)}' /proc/uptime)
+
+# Container health
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+  container_status="running"
+  container_started=$(docker inspect --format='{{.State.StartedAt}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+else
+  container_status="stopped"
+  container_started="unknown"
+fi
+
+# --- Write status JSON ---
+
+cat > "$STATUS_FILE" <<EOF
+{
+  "timestamp": "$(timestamp)",
+  "disk": {
+    "used_gb": ${disk_used_gb},
+    "total_gb": ${disk_total_gb},
+    "pct": ${disk_pct}
+  },
+  "ram": {
+    "used_mb": ${ram_used_mb},
+    "total_mb": ${ram_total_mb},
+    "free_mb": ${ram_free_mb}
+  },
+  "swap": {
+    "used_mb": ${swap_used_mb},
+    "total_mb": ${swap_total_mb}
+  },
+  "load": {
+    "1min": ${load_1min},
+    "5min": ${load_5min},
+    "15min": ${load_15min}
+  },
+  "uptime_seconds": ${uptime_seconds},
+  "container": {
+    "name": "${CONTAINER_NAME}",
+    "status": "${container_status}",
+    "started_at": "${container_started}"
+  }
+}
+EOF
+
+log "wrote ${STATUS_FILE}"

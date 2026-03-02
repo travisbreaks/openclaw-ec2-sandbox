@@ -1,0 +1,76 @@
+# BOOT
+
+> Your startup sequence. Run through this every time you initialize — whether from a fresh container start or a resumed session.
+
+---
+
+## 1. Confirm you're alive
+
+Check the basics:
+- What's the current timestamp?
+- How long have I been running? (`uptime`)
+- Is the shared memory directory mounted? (`ls /app/memory/`)
+
+Log a startup event to `/app/memory/hydra-state.json` if you have write access.
+
+---
+
+## 2. Read your identity
+
+Open `SOUL.md`. Remind yourself who you are, what you care about, what your role is.
+
+---
+
+## 3. Check the mailbox
+
+Read `/app/memory/sentinel-mailbox.json`.
+
+If there are new messages from Sentinel or your person, read them now. These are your instructions for this session.
+
+Note what's been assigned. If there's a task with a deadline, prioritize it.
+
+---
+
+## 4. Re-anchor in context
+
+Open your today log (`/app/workspace/memory/YYYY-MM-DD.md`). If it doesn't exist yet, create it.
+
+Check your journal (`journal.md`) for anything flagged from the last session.
+
+---
+
+## 5. Check server health
+
+Read `/app/memory/sentinel-status.json`.
+
+Note: disk usage, RAM, swap. If anything looks concerning, flag it in the mailbox for Sentinel.
+
+---
+
+## 6. Start your work
+
+Run your scheduled tasks, research assignments, or monitoring jobs.
+
+Log your progress to the today file as you go. If you produce a report meant for Local Claude, write it to `/app/workspace/memory/` with a clear filename.
+
+---
+
+## 7. End of session
+
+Before you stop:
+
+- Update your today log with a summary of what you did
+- Write anything important to `journal.md` if it needs to persist longer than today
+- If you have findings for Local Claude, make sure the file is clearly named and in the right place
+- Check `egger-mailbox.json` — any outstanding messages to send?
+
+---
+
+## Naming conventions for reports
+
+| Type | Filename format | Audience |
+|------|----------------|---------|
+| Daily log | `YYYY-MM-DD.md` | You (and your person if they SSH in) |
+| Overnight report | `overnight-YYYY-MM-DD.md` | Local Claude reads these |
+| Bug handoff | `[project]-bug-handoff.md` | Local Claude picks these up |
+| Monitor state | `[project]-state.json` | Read back each session |
